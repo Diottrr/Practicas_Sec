@@ -4,24 +4,40 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { fileURLToPath } from 'node:url'
 import express from 'express'
 import type { Response } from 'express'
+import { greeting, initialConversation, respond } from './agent.js'
+import type { AgentOption, Appointment, Conversation } from './agent.js'
 
 config({ path: fileURLToPath(new URL('../.env', import.meta.url)) })
 
 type TestSession = { id: string; number: string; name: string; createdAt: number; updatedAt: number }
-type TestMessage = { id: string; sessionId: string; role: 'user' | 'assistant'; content: string; status: 'pending' | 'completed' | 'failed'; error: string | null; createdAt: number }
-type TestAppointment = { id: string; sessionId: string; service: string; date: string; time: string; createdAt: number }
-type Store = { testSessions: TestSession[]; testMessages: TestMessage[]; testAppointments: TestAppointment[] }
+type TestMessage = { id: string; sessionId: string; role: 'user' | 'assistant'; content: string; options: AgentOption[]; status: 'pending' | 'completed' | 'failed'; error: string | null; createdAt: number }
+type Store = { testSessions: TestSession[]; testMessages: TestMessage[]; testAppointments: Appointment[]; testConversations: Conversation[] }
 const directory = new URL('../data/', import.meta.url)
 const file = new URL('messages.json', directory)
 mkdirSync(directory, { recursive: true })
 const rawSaved: unknown = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
 const saved = rawSaved && typeof rawSaved === 'object' && !Array.isArray(rawSaved) ? rawSaved as Record<string, unknown> : {}
+const savedSessions = Array.isArray(saved.testSessions) ? saved.testSessions as TestSession[] : []
+const savedMessages = Array.isArray(saved.testMessages) ? (saved.testMessages as TestMessage[]).map(message => ({
+  ...message,
+  options: Array.isArray(message.options) ? message.options : [],
+  ...(message.status === 'pending' ? { status: 'failed' as const, error: 'El backend se reinició antes de recibir la respuesta.' } : {}),
+})) : []
+const savedAppointments = Array.isArray(saved.testAppointments) ? (saved.testAppointments as Appointment[]).map(appointment => ({
+  ...appointment,
+  status: 'scheduled' as const,
+  updatedAt: typeof appointment.updatedAt === 'number' ? appointment.updatedAt : appointment.createdAt,
+})) : []
+const savedConversations: Conversation[] = Array.isArray(saved.testConversations) ? saved.testConversations as Conversation[] : savedSessions.map(session => ({
+  ...initialConversation(session.id),
+  patientName: session.name.startsWith('Prueba ') ? '' : session.name,
+  stage: session.name.startsWith('Prueba ') ? 'awaiting_name' as const : 'menu' as const,
+}))
 let store: Store = {
-  testSessions: Array.isArray(saved.testSessions) ? saved.testSessions as TestSession[] : [],
-  testMessages: Array.isArray(saved.testMessages) ? (saved.testMessages as TestMessage[]).map(message => message.status === 'pending'
-    ? { ...message, status: 'failed', error: 'El backend se reinició antes de recibir la respuesta.' }
-    : message) : [],
-  testAppointments: Array.isArray(saved.testAppointments) ? saved.testAppointments as TestAppointment[] : [],
+  testSessions: savedSessions,
+  testMessages: savedMessages,
+  testAppointments: savedAppointments,
+  testConversations: savedConversations,
 }
 const clients = new Set<Response>()
 const configured = (key: string) => Boolean(process.env[key]?.trim())
@@ -38,35 +54,11 @@ function commit(next: Store) {
 }
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const string = (value: unknown) => typeof value === 'string' ? value : ''
+const options = (value: unknown): AgentOption[] => Array.isArray(value) ? value.map(object).map(option => ({ label: string(option.label), value: string(option.value) })).filter(option => option.label && option.value) : []
 const testSession = (id: string) => store.testSessions.find(session => session.id === id)
 const agentError = (value: unknown) => value instanceof Error && value.name === 'TimeoutError'
   ? 'El agente agotó el tiempo de espera.'
   : 'No se pudo obtener una respuesta del agente local.'
-const dermatologyServices = [
-  { name: 'Consulta dermatológica general', pattern: /\b(consulta|dermatolog(?:ía|ia)|general)\b/ },
-  { name: 'Tratamiento para acné', pattern: /\b(acné|acne)\b/ },
-  { name: 'Evaluación de manchas y melasma', pattern: /\b(mancha|manchas|melasma)\b/ },
-  { name: 'Evaluación de dermatitis y alergias', pattern: /\b(dermatitis|alergia|alergias)\b/ },
-  { name: 'Evaluación de caída del cabello', pattern: /\b(caída del cabello|caida del cabello|cabello|alopecia)\b/ },
-  { name: 'Revisión de lunares', pattern: /\b(lunar|lunares)\b/ },
-]
-const servicesReply = `Servicios disponibles:\n${dermatologyServices.map((service, index) => `${index + 1}. ${service.name}`).join('\n')}\n\nTambién puedes consultar tus citas o solicitar una nueva indicando servicio, fecha y hora.`
-const handoffReply = 'En este momento no puedo responder tu consulta. Serás atendido por un asesor.'
-const appointmentDate = (message: string) => {
-  const relative = message.match(/\b(hoy|mañana|manana)\b/i)?.[1]
-  if (relative) return relative.toLocaleLowerCase('es') === 'manana' ? 'mañana' : relative.toLocaleLowerCase('es')
-  return message.match(/\b([0-3]?\d[/-][01]?\d(?:[/-]\d{2,4})?)\b/)?.[1]
-    ?? message.match(/\b([0-3]?\d\s+de\s+[a-záéíóúñ]+(?:\s+de\s+\d{4})?)\b/i)?.[1]
-    ?? ''
-}
-const appointmentTime = (message: string) => {
-  const withPrefix = message.match(/\b(?:a\s+las?|hora)\s+([01]?\d|2[0-3])(?::([0-5]\d))?\s*(am|pm|a\.\s*m\.|p\.\s*m\.)?\b/i)
-  const numeric = message.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/)
-  const match = withPrefix ?? numeric
-  if (!match) return ''
-  return `${match[1]}:${match[2] ?? '00'}${match[3] ? ` ${match[3].replace(/\s|\./g, '').toUpperCase()}` : ''}`
-}
-
 const admin = express()
 admin.use((req, res, next) => {
   const origin = req.get('origin')
@@ -100,6 +92,8 @@ admin.post('/api/test/sessions', (req, res) => {
   const session: TestSession = { id: number, number, name: requestedName || `Prueba ${String(suffix).padStart(2, '0')}`, createdAt: now, updatedAt: now }
   const next = structuredClone(store)
   next.testSessions.push(session)
+  next.testConversations.push(initialConversation(session.id))
+  next.testMessages.push({ id: randomUUID(), sessionId: session.id, role: 'assistant', content: greeting, options: [], status: 'completed', error: null, createdAt: now })
   commit(next)
   res.status(201).json(session)
 })
@@ -115,37 +109,16 @@ admin.post('/api/local-agent', (req, res) => {
   const message = string(body.message).trim()
   const sessionId = string(body.session_id)
   if (!message || !sessionId) { res.status(400).json({ error: 'Faltan session_id o message.' }); return }
-  const normalized = message.toLocaleLowerCase('es')
-  const sessionMessages = store.testMessages.filter(item => item.sessionId === sessionId)
-  const previousReply = [...sessionMessages].reverse().find(item => item.role === 'assistant')?.content ?? ''
-  const service = dermatologyServices.find(item => item.pattern.test(normalized))?.name ?? ''
-  const date = appointmentDate(message)
-  const time = appointmentTime(message)
-  const bookingFollowUp = previousReply.startsWith('Para agendar la cita')
-  const wantsBooking = /\b(agendar|agenda|reservar|reserva|programar|solicitar|sacar|quiero|necesito)\b.*\b(cita|turno)\b|\b(cita|turno)\b.*\b(agendar|reservar|programar)\b/.test(normalized)
-  let reply = handoffReply
-  if (/\b(hola|buenos días|buenos dias|buenas tardes|buenas noches|saludos)\b/.test(normalized)) {
-    reply = 'Hola, bienvenido al Centro Dermatológico. Puedo ayudarte a consultar nuestros servicios, agendar una cita o revisar tus citas registradas.'
-  } else if (/\b(mis citas|consultar (?:mi |mis )?citas?|ver (?:mi |mis )?citas?|citas? (?:agendada|agendadas|registrada|registradas)|tengo (?:una |alguna )?cita|estado de (?:mi |mis )?citas?)\b/.test(normalized)) {
-    const appointments = store.testAppointments.filter(item => item.sessionId === sessionId)
-    reply = appointments.length === 0
-      ? 'No tienes citas simuladas registradas. Para agendar una, indícame el servicio, la fecha y la hora que prefieres.'
-      : `Tus citas simuladas:\n${appointments.map((item, index) => `${index + 1}. ${item.service} - ${item.date}, ${item.time} - Código ${item.id}`).join('\n')}`
-  } else if (wantsBooking || (bookingFollowUp && Boolean(service || date || time))) {
-    const missing = [!service && 'servicio', !date && 'fecha', !time && 'hora'].filter(Boolean)
-    if (missing.length > 0) {
-      reply = `Para agendar la cita necesito: ${missing.join(', ')}. Puedes responder, por ejemplo: "Consulta dermatológica general, mañana a las 10:00".`
-    } else {
-      const appointment: TestAppointment = { id: randomUUID().slice(0, 8).toUpperCase(), sessionId, service, date, time, createdAt: Date.now() }
-      commit({ ...store, testAppointments: [...store.testAppointments, appointment] })
-      reply = `Cita simulada agendada correctamente.\nServicio: ${service}\nFecha: ${date}\nHora: ${time}\nCódigo: ${appointment.id}`
-    }
-  } else if (/\b(servicio|servicios|tratamiento|tratamientos|especialidad|especialidades|qué ofrecen|que ofrecen|opciones|ayuda)\b/.test(normalized)) {
-    reply = servicesReply
-  } else if (/\b(gracias|muchas gracias|perfecto|entendido)\b/.test(normalized)) {
-    reply = 'Con gusto. Si necesitas consultar servicios, agendar una cita o revisar tus citas, estoy para ayudarte.'
-  }
-  res.json({ reply })
+  if (!testSession(sessionId)) { res.status(404).json({ error: 'La sesión de prueba no existe.' }); return }
+  const conversation = store.testConversations.find(item => item.sessionId === sessionId) ?? initialConversation(sessionId)
+  const result = respond(conversation, store.testAppointments, message)
+  const next = structuredClone(store)
+  const conversationIndex = next.testConversations.findIndex(item => item.sessionId === sessionId)
+  if (conversationIndex >= 0) next.testConversations[conversationIndex] = result.conversation
+  else next.testConversations.push(result.conversation)
+  next.testAppointments = result.appointments
+  commit(next)
+  res.json({ reply: result.reply, options: result.options })
 })
 
 admin.post('/api/test/sessions/:sessionId/messages', async (req, res) => {
@@ -153,7 +126,7 @@ admin.post('/api/test/sessions/:sessionId/messages', async (req, res) => {
   const content = string(object(req.body).content).trim()
   if (!session) { res.status(404).json({ error: 'La sesión de prueba no existe.' }); return }
   if (!content || content.length > 4096) { res.status(400).json({ error: 'Escribe un mensaje de hasta 4096 caracteres.' }); return }
-  const message: TestMessage = { id: randomUUID(), sessionId: session.id, role: 'user', content, status: 'pending', error: null, createdAt: Date.now() }
+  const message: TestMessage = { id: randomUUID(), sessionId: session.id, role: 'user', content, options: [], status: 'pending', error: null, createdAt: Date.now() }
   const pending = structuredClone(store)
   pending.testMessages.push(message)
   const pendingSession = pending.testSessions.find(item => item.id === session.id)
@@ -173,12 +146,13 @@ admin.post('/api/test/sessions/:sessionId/messages', async (req, res) => {
     let payload: Record<string, unknown> = {}
     try { payload = object(JSON.parse(raw)) } catch { /* Se informa como respuesta inválida abajo. */ }
     const reply = string(payload.reply).trim()
+    const replyOptions = options(payload.options)
     if (!response.ok) throw new Error(string(payload.error) || `El agente respondió HTTP ${response.status}.`)
     if (!reply || reply.length > 20000) throw new Error('El agente debe responder JSON con un campo reply de hasta 20000 caracteres.')
     const next = structuredClone(store)
     const savedMessage = next.testMessages.find(item => item.id === message.id)
     if (savedMessage) savedMessage.status = 'completed'
-    const assistant: TestMessage = { id: randomUUID(), sessionId: session.id, role: 'assistant', content: reply, status: 'completed', error: null, createdAt: Date.now() }
+    const assistant: TestMessage = { id: randomUUID(), sessionId: session.id, role: 'assistant', content: reply, options: replyOptions, status: 'completed', error: null, createdAt: Date.now() }
     next.testMessages.push(assistant)
     const updatedSession = next.testSessions.find(item => item.id === session.id)
     if (updatedSession) updatedSession.updatedAt = assistant.createdAt

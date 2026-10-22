@@ -32,6 +32,10 @@ input { width: 100%; border: 1px solid #dae5e0; background: #f6f9f7; padding: 11
 .bubble.failed { border-color: #e7b8b4; background: #fff4f3; }
 .bubble p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; margin-bottom: 8px; }
 .bubble small { font-size: 11px; }
+.agent-options { display: flex; flex-wrap: wrap; gap: 8px; align-self: flex-start; max-width: 90%; margin-top: -5px; }
+.agent-options button { border: 1px solid #b9d6ca; border-radius: 999px; padding: 8px 12px; color: #245f4d; background: #f7fcf9; font-size: 12px; }
+.agent-options button:hover { border-color: #5f9f87; background: #e8f5ef; }
+.agent-options button:disabled { opacity: .55; }
 .composer { padding: 16px 22px; border-top: 1px solid #e3ece7; }
 .composer label { display: block; font-size: 13px; margin-bottom: 8px; }
 .prompt-options { display: flex; gap: 7px; margin-bottom: 10px; overflow-x: auto; padding-bottom: 3px; }

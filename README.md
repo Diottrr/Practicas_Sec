@@ -2,7 +2,7 @@
 
 ## Agente dermatológico local
 
-El proyecto incluye un agente de demostración para consultar servicios, simular el agendamiento de citas y revisar las citas registradas. Las conversaciones y citas se guardan localmente y no requieren servicios externos.
+El proyecto incluye un agente de demostración para consultar servicios, simular el agendamiento y la reprogramación de citas, y revisar las citas registradas. El agente conserva el estado de cada conversación para recopilar nombre, servicio, fecha y hora en mensajes separados. Las conversaciones y citas se guardan localmente y no requieren servicios externos.
 
 Requisito: Node.js `20.19` o posterior. Las versiones actuales de Vite y Oxlint no funcionan con versiones anteriores de Node 20.
 
@@ -36,7 +36,9 @@ cd C:\Users\usuario\Desktop\alejandro\frontend
 npm run dev
 ```
 
-Abre `http://localhost:5173` y pulsa **Nuevo chat**. El panel incluye preguntas rápidas para consultar servicios, solicitar una cita y revisar citas existentes.
+Abre `http://localhost:5173` y pulsa **Nuevo chat**. El agente enviará el saludo inicial, solicitará el nombre y mostrará botones para recorrer el menú. También puedes escribir las opciones, solicitar una cita o consultar las citas existentes.
+
+El menú incluye consulta dermatológica, medicina estética, reumatología, tratamientos faciales y corporales, farmacia dermatológica y otras especialidades médicas. Las fechas deben ser futuras y pueden escribirse como `25/10/2027`, `2027-10-25`, `25 de octubre de 2027` o `mañana`.
 
 El flujo local es:
 
@@ -69,10 +71,15 @@ La petición enviada al agente tiene este contrato:
 }
 ```
 
-El webhook debe responder inmediatamente:
+El agente externo debe responder inmediatamente. Las opciones son opcionales:
 
 ```json
-{ "reply": "Indícame el día y la hora que prefieres." }
+{
+  "reply": "Indícame el día y la hora que prefieres.",
+  "options": [
+    { "label": "Volver al menú", "value": "Menú" }
+  ]
+}
 ```
 
 Los chats y las citas simuladas se conservan al reiniciar el backend. Para borrar el historial local, detén el backend y elimina `backend/data/messages.json`.
@@ -83,6 +90,7 @@ Primero comprueba el código:
 
 ```powershell
 cd C:\Users\usuario\Desktop\alejandro\backend
+npm test
 npm run check
 cd ..\frontend
 npm run build
@@ -94,7 +102,8 @@ No se añadieron dependencias. Si trabajas en otra máquina sin node_modules, ej
 ## Alcance y diagnóstico
 
 - Conversaciones y citas guardadas en `backend/data/messages.json`, ignorado por Git; evita varias instancias del backend compartiendo el archivo.
-- El agente reconoce saludos, consultas de servicios, solicitudes de agendamiento y consultas de citas.
+- El agente reconoce saludos, consultas de servicios, solicitudes de agendamiento, consultas de citas y reprogramaciones.
+- El agendamiento y la reprogramación requieren confirmación antes de modificar las citas simuladas.
 - Las solicitudes no reconocidas se derivan a un asesor mediante un mensaje predefinido.
 - Actualizaciones en tiempo real mediante SSE (EventSource nativo). La conexión se restablece automáticamente y envía el historial actual.
 - Para cerrar: Ctrl+C en cada terminal.

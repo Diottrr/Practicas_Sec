@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import './App.css'
 
 type TestSession = { id: string; number: string; name: string; createdAt: number; updatedAt: number }
-type TestMessage = { id: string; sessionId: string; role: 'user' | 'assistant'; content: string; status: 'pending' | 'completed' | 'failed'; error: string | null; createdAt: number }
-type TestAppointment = { id: string; sessionId: string; service: string; date: string; time: string; createdAt: number }
+type AgentOption = { label: string; value: string }
+type TestMessage = { id: string; sessionId: string; role: 'user' | 'assistant'; content: string; options: AgentOption[]; status: 'pending' | 'completed' | 'failed'; error: string | null; createdAt: number }
+type TestAppointment = { id: string; sessionId: string; service: string; date: string; time: string; status: 'scheduled'; createdAt: number; updatedAt: number }
 type Snapshot = {
   testSessions: TestSession[]
   testMessages: TestMessage[]
@@ -12,7 +13,7 @@ type Snapshot = {
 }
 
 const date = (time: number | null) => time ? new Date(time).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' }) : 'Pendiente'
-const testPrompts = ['¿Qué servicios ofrecen?', 'Quiero agendar una cita', 'Consulta dermatológica general, mañana a las 10:00', 'Consultar mis citas']
+const testPrompts = ['Menú', 'Agendar cita', 'Consultar mis citas', 'Reprogramar cita']
 
 export default function App() {
   const [data, setData] = useState<Snapshot | null>(null)
@@ -65,6 +66,7 @@ function TestPanel({ sessions, messages, connected }: { sessions: TestSession[];
   const sessionId = selected || conversations[0]?.id || ''
   const active = sessions.find(session => session.id === sessionId)
   const thread = messages.filter(message => message.sessionId === sessionId).sort((a, b) => a.createdAt - b.createdAt)
+  const interactiveMessageId = thread.at(-1)?.role === 'assistant' ? thread.at(-1)?.id : undefined
 
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [sessionId, messages.length])
 
@@ -83,17 +85,18 @@ function TestPanel({ sessions, messages, connected }: { sessions: TestSession[];
     finally { setCreating(false) }
   }
 
-  async function send() {
-    if (!active || !draft.trim() || sending) return
+  async function send(requestedContent?: string) {
+    const content = (requestedContent ?? draft).trim()
+    if (!active || !content || sending || !connected) return
     setSending(true)
     setError('')
     try {
       const response = await fetch(`/api/test/sessions/${encodeURIComponent(active.id)}/messages`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: draft }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }),
       })
       const result = await response.json() as { error?: string }
       if (!response.ok) throw new Error(result.error || 'El agente no pudo responder.')
-      setDraft('')
+      if (requestedContent === undefined) setDraft('')
     } catch (issue) { setError(issue instanceof Error ? issue.message : 'Error de conexión.') }
     finally { setSending(false) }
   }
@@ -120,9 +123,9 @@ function TestPanel({ sessions, messages, connected }: { sessions: TestSession[];
     <section className="chat" aria-label="Chat de prueba">
       {active ? <>
         <div className="chat-heading"><span className="lab-mark">CONSULTA SIMULADA</span><h2>{active.name}</h2><small>Sesión {active.number} · Entorno local</small></div>
-        <div className="thread test-thread" role="log" aria-live="polite">{thread.map(message => <article className={`bubble ${message.role === 'user' ? 'out' : 'assistant'} ${message.status}`} key={message.id}>
+        <div className="thread test-thread" role="log" aria-live="polite">{thread.map(message => <Fragment key={message.id}><article className={`bubble ${message.role === 'user' ? 'out' : 'assistant'} ${message.status}`}>
           <p>{message.content}</p><small>{date(message.createdAt)} · {message.role === 'user' ? 'Tú' : 'Agente'}{message.status === 'pending' ? ' · Esperando respuesta...' : ''}{message.status === 'failed' ? ` · ${message.error ?? 'Falló'}` : ''}</small>
-        </article>)}{sending && <div className="typing" aria-label="El agente está respondiendo"><i /><i /><i /></div>}<div ref={bottom} /></div>
+        </article>{message.id === interactiveMessageId && message.options?.length > 0 && <div className="agent-options" aria-label="Opciones de respuesta">{message.options.map(option => <button type="button" key={option.value} disabled={sending || !connected} onClick={() => { void send(option.value) }}>{option.label}</button>)}</div>}</Fragment>)}{sending && <div className="typing" aria-label="El agente está respondiendo"><i /><i /><i /></div>}<div ref={bottom} /></div>
         <form className="composer" onSubmit={event => { event.preventDefault(); void send() }}>
           {error && <p className="error" role="alert">{error}</p>}
           <label htmlFor="test-message">Mensaje para el agente</label>
