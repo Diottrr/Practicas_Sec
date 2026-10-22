@@ -1,0 +1,20 @@
+# Dependencias y compilación
+node_modules/
+dist/
+dist-ssr/
+*.tsbuildinfo
+
+# Credenciales locales (conservar las plantillas sin secretos)
+.env
+.env.*
+!.env.example
+*.local
+
+# Historial local de WhatsApp
+/backend/data/
+
+# Registros y archivos del sistema
+*.log
+.DS_Store
+Thumbs.db
+.idea/
