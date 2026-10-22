@@ -1,20 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
-type Message = { id: string; phone: string; name: string; text: string; direction: 'in' | 'out'; timestamp: number; status: string }
-type Snapshot = { messages: Message[]; verifiedAt: number | null; eventAt: number | null; configuration: { verifyToken: boolean; appSecret: boolean; accessToken: boolean; phoneNumber: boolean } }
-const labels: Record<string, string> = { received: 'Recibido', accepted: 'Aceptado por Meta', sent: 'Enviado', delivered: 'Entregado', read: 'Leído', failed: 'Falló la entrega' }
+type TestSession = { id: string; number: string; name: string; createdAt: number; updatedAt: number }
+type TestMessage = { id: string; sessionId: string; role: 'user' | 'assistant'; content: string; status: 'pending' | 'completed' | 'failed'; error: string | null; createdAt: number }
+type TestAppointment = { id: string; sessionId: string; service: string; date: string; time: string; createdAt: number }
+type Snapshot = {
+  testSessions: TestSession[]
+  testMessages: TestMessage[]
+  testAppointments: TestAppointment[]
+  configuration: { testAgent: 'local' | 'custom' }
+}
+
 const date = (time: number | null) => time ? new Date(time).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' }) : 'Pendiente'
+const testPrompts = ['¿Qué servicios ofrecen?', 'Quiero agendar una cita', 'Consulta dermatológica general, mañana a las 10:00', 'Consultar mis citas']
 
 export default function App() {
   const [data, setData] = useState<Snapshot | null>(null)
   const [connected, setConnected] = useState(false)
-  const [selected, setSelected] = useState('')
-  const [query, setQuery] = useState('')
-  const [draft, setDraft] = useState('')
-  const [sending, setSending] = useState(false)
-  const [error, setError] = useState('')
-  const bottom = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     const stream = new EventSource('/api/events')
     stream.onmessage = event => {
@@ -23,57 +26,111 @@ export default function App() {
     stream.onerror = () => setConnected(false)
     return () => stream.close()
   }, [])
-  const messages = data?.messages ?? []
-  const contacts = new Map<string, Message>()
-  for (const message of [...messages].sort((a, b) => a.timestamp - b.timestamp)) contacts.set(message.phone, message)
-  const conversations = [...contacts.values()].sort((a, b) => b.timestamp - a.timestamp)
-  const phone = selected || conversations[0]?.phone || ''
-  const active = contacts.get(phone)
-  const thread = messages.filter(m => m.phone === phone).sort((a, b) => a.timestamp - b.timestamp)
-  useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [phone, messages.length])
+
+  const sessions = data?.testSessions ?? []
+  const testMessages = data?.testMessages ?? []
+  const appointments = data?.testAppointments ?? []
+
+  return <main className="workspace">
+    <header className="topbar">
+      <div><span className="eyebrow">CENTRO DERMATOLÓGICO · ENTORNO LOCAL</span><h1>Simulador de atención</h1></div>
+      <span className={`badge ${connected ? 'online' : ''}`}>{connected ? '● Conectado al servidor' : '○ Reconectando...'}</span>
+    </header>
+    <section className="metrics" aria-label="Estado del simulador">
+      <div><small>Sesiones simuladas</small><strong>{sessions.length}</strong></div>
+      <div><small>Mensajes de prueba</small><strong>{testMessages.length}</strong></div>
+      <div><small>Citas agendadas</small><strong>{appointments.length}</strong></div>
+      <div><small>Agente conectado</small><strong>{data?.configuration.testAgent === 'custom' ? 'Externo' : 'Local incluido'}</strong></div>
+    </section>
+    {!connected && <BackendNotice />}
+    <TestPanel sessions={sessions} messages={testMessages} connected={connected} />
+    <footer>Entorno de práctica · Historial y citas simuladas guardados localmente</footer>
+  </main>
+}
+
+function BackendNotice() {
+  return <p className="notice" role="status">Esperando al backend. Ejecuta <code>npm run dev</code> en la carpeta backend; la conexión se reintentará automáticamente.</p>
+}
+
+function TestPanel({ sessions, messages, connected }: { sessions: TestSession[]; messages: TestMessage[]; connected: boolean }) {
+  const [selected, setSelected] = useState('')
+  const [query, setQuery] = useState('')
+  const [name, setName] = useState('')
+  const [draft, setDraft] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
+  const bottom = useRef<HTMLDivElement>(null)
+  const conversations = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+  const sessionId = selected || conversations[0]?.id || ''
+  const active = sessions.find(session => session.id === sessionId)
+  const thread = messages.filter(message => message.sessionId === sessionId).sort((a, b) => a.createdAt - b.createdAt)
+
+  useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [sessionId, messages.length])
+
+  async function createSession() {
+    if (creating || !connected) return
+    setCreating(true)
+    setError('')
+    try {
+      const response = await fetch('/api/test/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
+      const result = await response.json() as TestSession & { error?: string }
+      if (!response.ok) throw new Error(result.error || 'No se pudo crear el chat.')
+      setSelected(result.id)
+      setName('')
+      setDraft('')
+    } catch (issue) { setError(issue instanceof Error ? issue.message : 'Error de conexión.') }
+    finally { setCreating(false) }
+  }
 
   async function send() {
-    if (!draft.trim() || sending) return
+    if (!active || !draft.trim() || sending) return
     setSending(true)
     setError('')
     try {
-      const response = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, text: draft }) })
+      const response = await fetch(`/api/test/sessions/${encodeURIComponent(active.id)}/messages`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: draft }),
+      })
       const result = await response.json() as { error?: string }
-      if (!response.ok) throw new Error(result.error || 'No se pudo enviar el mensaje.')
+      if (!response.ok) throw new Error(result.error || 'El agente no pudo responder.')
       setDraft('')
     } catch (issue) { setError(issue instanceof Error ? issue.message : 'Error de conexión.') }
     finally { setSending(false) }
   }
 
-  return <main className="workspace">
-    <header className="topbar"><div><span className="eyebrow">CENTRO DERMATOLÓGICO · PROTOTIPO LOCAL</span><h1>Bandeja de WhatsApp</h1></div><span className={`badge ${connected ? 'online' : ''}`}>{connected ? '● Conectado al servidor' : '○ Reconectando…'}</span></header>
-    <section className="metrics" aria-label="Estado de la integración">
-      <div><small>Conversaciones</small><strong>{contacts.size}</strong></div>
-      <div><small>Mensajes</small><strong>{messages.length}</strong></div>
-      <div><small>Última verificación de Meta</small><strong>{date(data?.verifiedAt ?? null)}</strong></div>
-      <div><small>Último evento firmado</small><strong>{date(data?.eventAt ?? null)}</strong></div>
+  return <section className="inbox test-inbox">
+    <aside>
+      <div className="sidebar-heading">
+        <h2>Sesiones simuladas</h2>
+        <form className="new-chat" onSubmit={event => { event.preventDefault(); void createSession() }}>
+          <input aria-label="Nombre del nuevo chat" maxLength={80} placeholder="Nombre opcional" value={name} onChange={event => setName(event.target.value)} />
+          <button disabled={!connected || creating}>{creating ? 'Creando...' : '+ Nuevo chat'}</button>
+        </form>
+        <input aria-label="Buscar sesión" placeholder="Buscar nombre o número" value={query} onChange={event => setQuery(event.target.value)} />
+      </div>
+      <div className="contacts">{conversations.filter(session => `${session.name} ${session.number}`.toLowerCase().includes(query.toLowerCase())).map(session => {
+        const last = [...messages].reverse().find(message => message.sessionId === session.id)
+        return <button disabled={sending} key={session.id} className={`contact ${sessionId === session.id ? 'selected' : ''}`} onClick={() => { setSelected(session.id); setDraft(''); setError('') }}>
+          <span className="avatar test-avatar">T</span><span><b>{session.name}</b><small>+{session.number}</small><span className="preview">{last?.content ?? 'Conversación vacía'}</span></span>
+        </button>
+      })}
+        {!conversations.length && <p className="empty-list">Crea un chat. El sistema asignará un número falso y conservará el historial localmente.</p>}
+      </div>
+    </aside>
+    <section className="chat" aria-label="Chat de prueba">
+      {active ? <>
+        <div className="chat-heading"><span className="lab-mark">CONSULTA SIMULADA</span><h2>{active.name}</h2><small>Sesión {active.number} · Entorno local</small></div>
+        <div className="thread test-thread" role="log" aria-live="polite">{thread.map(message => <article className={`bubble ${message.role === 'user' ? 'out' : 'assistant'} ${message.status}`} key={message.id}>
+          <p>{message.content}</p><small>{date(message.createdAt)} · {message.role === 'user' ? 'Tú' : 'Agente'}{message.status === 'pending' ? ' · Esperando respuesta...' : ''}{message.status === 'failed' ? ` · ${message.error ?? 'Falló'}` : ''}</small>
+        </article>)}{sending && <div className="typing" aria-label="El agente está respondiendo"><i /><i /><i /></div>}<div ref={bottom} /></div>
+        <form className="composer" onSubmit={event => { event.preventDefault(); void send() }}>
+          {error && <p className="error" role="alert">{error}</p>}
+          <label htmlFor="test-message">Mensaje para el agente</label>
+          <div className="prompt-options" aria-label="Preguntas de prueba sugeridas">{testPrompts.map(prompt => <button type="button" key={prompt} disabled={sending} onClick={() => setDraft(prompt)}>{prompt}</button>)}</div>
+          <div className="compose-row"><textarea id="test-message" maxLength={4096} disabled={sending} placeholder="Escribe cualquier mensaje o elige una prueba sugerida" value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send() } }} /><button disabled={!connected || sending || !draft.trim()}>{sending ? 'Consultando...' : 'Enviar prueba'}</button></div>
+          <small>Enter envía · Shift + Enter crea una nueva línea · Sesión {active.number}</small>
+        </form>
+      </> : <div className="welcome"><span className="welcome-icon test-icon">D</span><h2>Crea una consulta dermatológica</h2><p>El agente local puede informar servicios, simular el agendamiento y consultar las citas registradas.</p></div>}
     </section>
-    {!connected && <p className="notice" role="status">Esperando al backend. Ejecuta npm run dev en la carpeta backend. La conexión se reintentará automáticamente.</p>}
-    {data && Object.values(data.configuration).some(value => !value) && <p className="notice">Completa en backend/.env: {[
-      !data.configuration.verifyToken && 'META_VERIFY_TOKEN', !data.configuration.appSecret && 'META_APP_SECRET',
-      !data.configuration.accessToken && 'WHATSAPP_ACCESS_TOKEN', !data.configuration.phoneNumber && 'WHATSAPP_PHONE_NUMBER_ID',
-    ].filter(Boolean).join(', ')}. Reinicia el backend después de guardar.</p>}
-    <section className="inbox">
-      <aside><div className="sidebar-heading"><h2>Conversaciones</h2><input aria-label="Buscar conversación" placeholder="Buscar nombre o teléfono" value={query} onChange={event => setQuery(event.target.value)} /></div>
-        <div className="contacts">{conversations.filter(c => `${c.name} ${c.phone}`.toLowerCase().includes(query.toLowerCase())).map(contact => <button disabled={sending} key={contact.phone} className={`contact ${phone === contact.phone ? 'selected' : ''}`} onClick={() => { setSelected(contact.phone); setDraft(''); setError('') }}><span className="avatar">{contact.name.slice(0, 1).toUpperCase()}</span><span><b>{contact.name}</b><small>+{contact.phone}</small><span className="preview">{contact.text}</span></span></button>)}
-          {!conversations.length && <p className="empty-list">Todavía no hay conversaciones. Los mensajes reales aparecerán aquí.</p>}
-        </div>
-      </aside>
-      <section className="chat" aria-label="Mensajes">
-        {active ? <><div className="chat-heading"><h2>{active.name}</h2><small>+{phone} · WhatsApp Cloud API</small></div>
-          <div className="thread" role="log" aria-live="polite">{thread.map(message => <article className={`bubble ${message.direction}`} key={message.id}><p>{message.text}</p><small>{date(message.timestamp)} · {labels[message.status] ?? message.status}</small></article>)}<div ref={bottom} /></div>
-          <form className="composer" onSubmit={event => { event.preventDefault(); void send() }}>
-            {error && <p className="error" role="alert">{error}</p>}
-            <label htmlFor="reply">Responder al contacto</label><div className="compose-row"><textarea id="reply" maxLength={4096} disabled={sending} placeholder="Escribe tu respuesta…" value={draft} onChange={event => setDraft(event.target.value)} /><button disabled={!connected || sending || !draft.trim() || !data?.configuration.accessToken || !data.configuration.phoneNumber}>{sending ? 'Enviando…' : 'Enviar mensaje'}</button></div>
-            <small>Respuestas de texto dentro de las 24 horas posteriores al último mensaje del contacto.</small>
-          </form></> : <div className="welcome"><span className="welcome-icon">W</span><h2>Tu primera conversación empieza aquí</h2><p>Verifica el webhook en Meta, suscríbete a <b>messages</b> y escribe al número de prueba desde tu WhatsApp.</p><p>Los mensajes se guardan localmente y aparecen sin recargar la página.</p></div>}
-      </section>
-    </section>
-    <footer>Entorno de práctica · Adjuntos representados por su tipo · Historial local en backend/data</footer>
-  </main>
+  </section>
 }
